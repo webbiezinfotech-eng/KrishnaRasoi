@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <title>Updating Restaurant App…</title>
+  <style>
+    body { font-family: system-ui, sans-serif; display: flex; min-height: 100vh; align-items: center; justify-content: center; margin: 0; background: #fafafa; color: #222; }
+    .box { text-align: center; padding: 24px; max-width: 360px; }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    p { font-size: 14px; color: #666; margin: 0 0 16px; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>App update ho rahi hai…</h1>
+    <p>Purana cache clear karke naye version pe le ja rahe hain. 2 second ruko.</p>
+  </div>
+  <script>
+    (async function () {
+      try {
+        if ('caches' in window) {
+          const keys = await caches.keys()
+          await Promise.all(keys.map(function (k) { return caches.delete(k) }))
+        }
+        if ('serviceWorker' in navigator) {
+          const regs = await navigator.serviceWorker.getRegistrations()
+          await Promise.all(regs.map(function (r) { return r.unregister() }))
+        }
+        try { localStorage.removeItem('app_build_id') } catch (e) {}
+      } catch (e) {}
+      setTimeout(function () {
+        window.location.replace('/?_fresh=' + Date.now())
+      }, 600)
+    })()
+  </script>
+</body>
+</html>

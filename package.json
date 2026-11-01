@@ -1,0 +1,18 @@
+{
+  "name": "restaurant-system",
+  "version": "1.0.0",
+  "description": "```sql CREATE DATABASE restaurant_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; USE restaurant_db; SOURCE database/schema.sql; ```",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "node-thermal-printer": "^4.6.0"
+  }
+}
