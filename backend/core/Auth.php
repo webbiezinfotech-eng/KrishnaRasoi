@@ -187,6 +187,14 @@ class Auth
         return $payload;
     }
 
+    /** Login scope: 'restaurant' (pura software) ya 'guest_house' (sirf Kripa Shanti). */
+    public static function scope(?array $payload = null): string
+    {
+        $payload = $payload ?? self::guard();
+        $scope = $payload['scope'] ?? 'restaurant';
+        return $scope === 'guest_house' ? 'guest_house' : 'restaurant';
+    }
+
     /** Normalised role from JWT (legacy tokens without role = admin). */
     public static function role(?array $payload = null): string
     {
@@ -201,15 +209,28 @@ class Auth
         return self::guard();
     }
 
-    /** Full admin only (settings, users, reports, messaging, billing). */
+    /**
+     * Restaurant modules only (settings, users, reports, messaging, billing, tables,
+     * orders, menu). Kripa Shanti ke darwaze se aaya token yahan block hota hai —
+     * chahe wo user admin hi ho.
+     */
     public static function requireAdmin(): array
     {
         $payload = self::guard();
+
+        if (self::scope($payload) === 'guest_house') {
+            Response::forbidden(
+                'Ye section restaurant ka hai. Aap Kripa Shanti (guest house) login se andar hain — '
+                . 'restaurant ke liye Restaurant Login tab use karein.'
+            );
+        }
         if (self::role($payload) !== 'admin') {
             self::forbiddenRoles($payload, ['admin']);
         }
         return $payload;
     }
+
+    /** Sirf guest house scope wale endpoints (defence in depth). */
 
     /** Admin + Manager (guest house operations, reports view). */
     public static function requireManagement(): array

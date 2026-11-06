@@ -23,19 +23,19 @@ export default function Login() {
     if (!form.username || !form.password) { toast.error('Please fill all fields.'); return }
     setLoading(true)
     try {
-      const user = await login(form.username, form.password)
+      const user = await login(form.username, form.password, isGh ? 'guest_house' : 'restaurant')
       const perms = Array.isArray(user?.permissions) ? user.permissions : []
 
-      if (mode === 'guesthouse' && user?.role !== 'admin' && !perms.includes('guest_house')) {
+      if (isGh && user?.role !== 'admin' && !perms.includes('guest_house')) {
         toast.error('Is login me Kripa Shanti (guest house) ka access nahi hai.')
         return
       }
 
-      toast.success(user?.role === 'waiter' ? 'Ready to take orders.' : 'Welcome back!')
-      const target = mode === 'guesthouse'
-        ? (perms.includes('guest_house') || user?.role === 'admin' ? '/guest-house' : homePathForRole(user?.role, perms))
-        : homePathForRole(user?.role, perms)
-      navigate(target, { replace: true })
+      toast.success(
+        isGh ? 'Kripa Shanti khul raha hai…'
+          : user?.role === 'waiter' ? 'Ready to take orders.' : 'Welcome back!'
+      )
+      navigate(homePathForRole(user?.role, perms, isGh ? 'guest_house' : 'restaurant'), { replace: true })
     } catch (err) {
       toast.error(err.response?.data?.message || 'Login failed.')
     } finally { setLoading(false) }
@@ -91,8 +91,8 @@ export default function Login() {
           </form>
           <p className="text-xs text-surface-400 mt-4 text-center leading-relaxed">
             {isGh
-              ? ''
-              : ''}
+              ? 'Guest House login me sirf Kripa Shanti ka system khulta hai — rooms, walk-in, booking, billing aur reports.'
+              : 'Restaurant login me aapke login ki permission ke hisaab se modules khulte hain.'}
           </p>
         </div>
         <CopyrightFooter className="mt-8" />

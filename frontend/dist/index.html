@@ -9,15 +9,51 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Restaurant" />
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
   <title>Restaurant Manager</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Fraunces:wght@600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <script type="module" crossorigin src="/assets/index-CWojqb7c.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-CjARf4i5.css">
-<link rel="manifest" href="/manifest.webmanifest"></head>
+  <script type="module" crossorigin src="./assets/index-DC3G__81.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-CjARf4i5.css">
+<link rel="manifest" href="./manifest.webmanifest"></head>
 <body class="bg-surface-50">
   <div id="root"></div>
+  <script>
+    /* Boot watchdog: agar app 8s tak mount na ho to blank white page ki jagah
+       asli reason dikhao. Isse "server par kuch nahi dikh raha" wala guessing band. */
+    (function () {
+      var done = false
+      function box(title, detail) {
+        var root = document.getElementById('root')
+        if (done || !root || root.childElementCount > 0) return
+        done = true
+        root.innerHTML =
+          '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#fff7ed">' +
+            '<div style="max-width:460px;background:#fff;border:1px solid #fed7aa;border-radius:14px;padding:22px">' +
+              '<h2 style="margin:0 0 8px;font-size:18px;color:#c2410c">' + title + '</h2>' +
+              '<p style="margin:0 0 14px;font-size:13px;line-height:1.55;color:#444">' + detail + '</p>' +
+              '<p style="margin:0 0 14px;font-size:12px;color:#666">Server check karein: <b>/backend/install-check.php</b></p>' +
+              '<button onclick="(async function(){try{localStorage.clear();if(window.caches){var k=await caches.keys();await Promise.all(k.map(function(x){return caches.delete(x)}))}if(navigator.serviceWorker){var r=await navigator.serviceWorker.getRegistrations();await Promise.all(r.map(function(x){return x.unregister()}))}}catch(e){}location.reload()})()" ' +
+                'style="background:#ea580c;color:#fff;border:0;border-radius:10px;padding:10px 16px;font-size:13px;font-weight:600;cursor:pointer">Cache clear karke reload</button>' +
+            '</div>' +
+          '</div>'
+      }
+      window.addEventListener('error', function (e) {
+        var t = e && e.target
+        if (t && e.target.tagName === 'SCRIPT') box('App ka JavaScript load nahi hua', 'Script 404 hai: ' + (t.src || '?') + ' — matlab dist folder galat jagah upload hua hai ya asset path match nahi kar raha.')
+        else if (e && e.message) box('App start hote hi error aaya', String(e.message))
+      }, true)
+      window.addEventListener('unhandledrejection', function (e) {
+        box('App start hote hi error aaya', String((e && e.reason && (e.reason.message || e.reason)) || 'Unknown error'))
+      })
+      setTimeout(function () {
+        if (document.getElementById('root') && document.getElementById('root').childElementCount === 0) {
+          box('App load nahi hui', 'Assets ya API block ho rahi hai. Aksar iska matlab hota hai ki dist ki files public_html ke root me nahi hain, ya service worker purana cache de raha hai.')
+        }
+      }, 8000)
+    })()
+  </script>
 </body>
 </html>

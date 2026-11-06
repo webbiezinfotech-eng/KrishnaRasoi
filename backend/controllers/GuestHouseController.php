@@ -21,10 +21,85 @@ class GuestHouseController
             $this->addColumnIfMissing('guest_house_guests', 'children_count', "ALTER TABLE guest_house_guests ADD COLUMN children_count INT NOT NULL DEFAULT 0 AFTER adults_count");
             $this->addColumnIfMissing('guest_house_guests', 'companions', "ALTER TABLE guest_house_guests ADD COLUMN companions TEXT NULL AFTER children_count");
             $this->addColumnIfMissing('guest_house_guests', 'companions_id_details', "ALTER TABLE guest_house_guests ADD COLUMN companions_id_details TEXT NULL AFTER companions");
+            $this->addColumnIfMissing('guest_house_rooms', 'category_id', "ALTER TABLE guest_house_rooms ADD COLUMN category_id INT UNSIGNED DEFAULT NULL AFTER room_type");
+            $this->syncRoomCategories();
             Database::run("ALTER TABLE guest_house_guests
                 MODIFY COLUMN status ENUM('reserved','checked_in','checked_out','cancelled') NOT NULL DEFAULT 'checked_in'");
         } catch (Throwable $e) {
             // keep backward compatibility when ALTER ... IF NOT EXISTS is unavailable
+        }
+    }
+
+    /**
+     * Purane rooms jinki category set nahi thi — unhe room_type ke naam se category se jodo.
+     * Isi wajah se card par hamesha "Standard" dikh raha tha. Sirf tab chalta hai jab
+     * sach me koi room category ke bina chhoot gaya ho.
+     */
+    private function syncRoomCategories(): void
+    {
+        try {
+            if (!$this->tableExists('guest_house_room_categories')) return;
+            if (!$this->columnExists('guest_house_rooms', 'category_id')) return;
+
+            $pending = (int) Database::value(
+                "SELECT COUNT(*) FROM guest_house_rooms WHERE is_active = 1 AND category_id IS NULL"
+            );
+
+            // Pass 2: stale category_id — room kisi aisi category ko point kar raha hai
+            // jo ab active nahi hai (categories delete karke dobara banayi gayi thi to
+            // unke ID badal gaye). Dashboard par naam room_type fallback se sahi dikh
+            // jata hai, isliye wahan sab set lagta hai — par walk-in dropdown me wahi
+            // category khaali aa jati thi. Aise rooms ko unke room_type naam se wapas
+            // sahi (nayi) category se jodo.
+            $staleRows = Database::all(
+                "SELECT r.id, r.room_type
+                 FROM guest_house_rooms r
+                 LEFT JOIN guest_house_room_categories c ON c.id = r.category_id AND c.is_active = 1
+                 WHERE r.is_active = 1 AND r.category_id IS NOT NULL AND c.id IS NULL"
+            );
+            foreach ($staleRows as $row) {
+                $label = trim((string) ($row['room_type'] ?? ''));
+                if ($label === '') continue;
+                $catId = (int) Database::value(
+                    "SELECT id FROM guest_house_room_categories WHERE name = ? AND is_active = 1 LIMIT 1",
+                    [$label]
+                );
+                if ($catId > 0) {
+                    Database::run(
+                        "UPDATE guest_house_rooms SET category_id = ?, updated_at = NOW() WHERE id = ?",
+                        [$catId, (int) $row['id']]
+                    );
+                }
+            }
+
+            if ($pending === 0) return;
+
+            $rows = Database::all(
+                "SELECT id, room_type FROM guest_house_rooms WHERE is_active = 1 AND category_id IS NULL"
+            );
+            foreach ($rows as $row) {
+                $label = trim((string) ($row['room_type'] ?? ''));
+                if ($label === '') $label = 'Standard';
+
+                $catId = (int) Database::value(
+                    "SELECT id FROM guest_house_room_categories WHERE name = ? LIMIT 1",
+                    [$label]
+                );
+                if ($catId === 0) {
+                    Database::run(
+                        "INSERT INTO guest_house_room_categories (name, is_active, created_by)
+                         SELECT ?, 1, COALESCE((SELECT MIN(id) FROM admin_users), 1)",
+                        [$label]
+                    );
+                    $catId = Database::lastId();
+                }
+                Database::run(
+                    "UPDATE guest_house_rooms SET category_id = ?, room_type = ?, updated_at = NOW() WHERE id = ?",
+                    [$catId, $label, (int) $row['id']]
+                );
+            }
+        } catch (Throwable $e) {
+            // non-fatal — display phir bhi kaam karta rahega
         }
     }
 
@@ -74,12 +149,37 @@ class GuestHouseController
         }
     }
 
+    /**
+     * MySQL/MariaDB: SHOW COLUMNS ... LIKE ? ko native prepared statement ke sath
+     * kabhi kabhi khaali result milta hai. Isliye information_schema se poochte hain —
+     * yehi wajah thi ki category_id column "missing" maan liya jata tha aur har room
+     * ka category "Standard" ban jata tha.
+     */
     private function columnExists(string $table, string $column): bool
     {
         try {
-            $col = Database::row("SHOW COLUMNS FROM `$table` LIKE ?", [$column]);
-            return !empty($col);
+            $exists = Database::value(
+                "SELECT COUNT(*) FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?",
+                [$table, $column]
+            );
+            if ((int) $exists > 0) return true;
+
+            // fallback (kuch shared hosts information_schema restrict karte hain)
+            $cols = Database::all("SHOW COLUMNS FROM `{$table}`");
+            foreach ($cols as $c) {
+                if (strcasecmp((string) ($c['Field'] ?? ''), $column) === 0) return true;
+            }
+            return false;
         } catch (Throwable $e) {
+            try {
+                $cols = Database::all("SHOW COLUMNS FROM `{$table}`");
+                foreach ($cols as $c) {
+                    if (strcasecmp((string) ($c['Field'] ?? ''), $column) === 0) return true;
+                }
+            } catch (Throwable $e2) {
+                // ignore
+            }
             return false;
         }
     }
@@ -112,7 +212,7 @@ class GuestHouseController
             $exists = Database::row(
                 "SELECT id, name, is_active
                  FROM guest_house_room_categories
-                 WHERE LOWER(name) = LOWER(?)
+                 WHERE name = ?
                  LIMIT 1",
                 [$name]
             );
@@ -158,6 +258,16 @@ class GuestHouseController
                     [$categoryId]
                 );
                 if ((int)$catExists === 0) Response::notFound('Room category not found.');
+            }
+
+            // Category hi asli source hai — room_type me bhi wahi naam likho,
+            // warna purani queries/reports me galti se "Standard" aa jata hai.
+            if ($categoryId > 0) {
+                $catName = (string) Database::value(
+                    "SELECT name FROM guest_house_room_categories WHERE id = ?",
+                    [$categoryId]
+                );
+                if (trim($catName) !== '') $roomType = trim($catName);
             }
 
             Database::run(
@@ -305,7 +415,7 @@ class GuestHouseController
         $rooms = Database::all(
             "SELECT r.id, r.room_no, r.room_type, r.floor_no, r.status, r.rent,
                     " . ($hasCategoryCol ? "r.category_id," : "NULL AS category_id,") . "
-                    " . ($joinCategory ? "COALESCE(c.name, r.room_type, 'Standard')" : "COALESCE(r.room_type, 'Standard')") . " AS category_name,
+                    " . ($joinCategory ? "COALESCE(c.name, NULLIF(r.room_type, ''), 'Uncategorised')" : "COALESCE(NULLIF(r.room_type, ''), 'Uncategorised')") . " AS category_name,
                     g.id AS guest_id, g.guest_name, g.phone, g.id_proof, g.check_in_at, g.expected_checkout_at, g.balance_amount,
                     g.total_amount, g.paid_amount
              FROM guest_house_rooms r
@@ -386,36 +496,94 @@ class GuestHouseController
 
         $categoryId = $req->queryInt('category_id', 0);
         $excludeGuestId = $req->queryInt('exclude_guest_id', 0);
-        $from = $req->queryStr('from_date');
-        $to = $req->queryStr('to_date');
+        $from = trim($req->queryStr('from_date'));
+        $to   = trim($req->queryStr('to_date'));
 
-        if ($categoryId <= 0) Response::success([]);
-        if ($from === '' || $to === '') Response::success([]);
+        // Dates optional — khaali ho to aaj se 1 din ka window.
+        $fromTs = $from !== '' ? strtotime($from) : false;
+        if ($fromTs === false) $fromTs = time();
+        $toTs = $to !== '' ? strtotime($to) : false;
+        if ($toTs === false) $toTs = $fromTs + 86400;
+        if ($toTs <= $fromTs) $toTs = $fromTs + 86400;
+        $fromSql = date('Y-m-d H:i:s', $fromTs);
+        $toSql   = date('Y-m-d H:i:s', $toTs);
 
-        $fromSql = $this->parseDateTime('from_date', $from);
-        $toSql = $this->parseDateTime('to_date', $to);
-        if (strtotime($toSql) <= strtotime($fromSql)) {
-            Response::unprocessable('Validation failed.', ['to_date' => ['To date must be after from date.']]);
+        $hasCategoryTable = $this->tableExists('guest_house_room_categories');
+        $hasCategoryCol   = $this->columnExists('guest_house_rooms', 'category_id');
+        $joinCategory     = $hasCategoryTable && $hasCategoryCol;
+        $onlyFree         = $req->queryInt('only_available', 0) === 1;
+
+        // Category ke SAARE rooms wapas aate hain, har room ke sath is_available flag.
+        // Isse dropdown me room number ke aage chhota "Available / Occupied" tag lag sakta hai.
+        $sql = "SELECT r.id, r.room_no, r.floor_no, r.rent, r.status,
+                       " . ($hasCategoryCol ? "r.category_id," : "NULL AS category_id,") . "
+                       " . ($joinCategory ? "COALESCE(c.name, NULLIF(r.room_type, ''), 'Uncategorised')" : "COALESCE(NULLIF(r.room_type, ''), 'Uncategorised')") . " AS category_name,
+                       CASE WHEN EXISTS (
+                            SELECT 1 FROM guest_house_guests g
+                            WHERE g.room_id = r.id
+                              AND g.id <> ?
+                              AND g.status IN ('reserved', 'checked_in')
+                              AND (? < CAST(COALESCE(g.booking_to, g.expected_checkout_at, g.check_out_at, '9999-12-31 23:59:59') AS DATETIME))
+                              AND (? > CAST(COALESCE(g.booking_from, g.check_in_at, g.created_at) AS DATETIME))
+                       ) THEN 0 ELSE 1 END AS is_available
+                FROM guest_house_rooms r
+                " . ($joinCategory ? "LEFT JOIN guest_house_room_categories c ON c.id = r.category_id" : "") . "
+                WHERE r.is_active = 1";
+
+        $params = [$excludeGuestId, $fromSql, $toSql];
+
+        $catName = '';
+        if ($categoryId > 0 && $hasCategoryTable) {
+            try {
+                $catName = trim((string) Database::value(
+                    "SELECT name FROM guest_house_room_categories WHERE id = ?",
+                    [$categoryId]
+                ));
+            } catch (Throwable $e) {
+                $catName = '';
+            }
         }
 
-        $rooms = Database::all(
-            "SELECT r.id, r.room_no
-             FROM guest_house_rooms r
-             WHERE r.is_active = 1
-               AND r.category_id = ?
-               AND NOT EXISTS (
-                    SELECT 1 FROM guest_house_guests g
-                    WHERE g.room_id = r.id
-                      AND g.id <> ?
-                      AND g.status IN ('reserved', 'checked_in')
-                      AND (? < COALESCE(g.booking_to, g.expected_checkout_at, g.check_out_at, '9999-12-31 23:59:59'))
-                      AND (? > COALESCE(g.booking_from, g.check_in_at, g.created_at))
-               )
-             ORDER BY CAST(r.room_no AS UNSIGNED), r.room_no",
-            [$categoryId, $excludeGuestId, $fromSql, $toSql]
-        );
+        // Live-hosting lesson (error 1267): SQL me string-vs-string match — LIKE / LOWER /
+        // CONCAT — table (general_ci) vs connection (unicode_ci) collation clash paida
+        // karta tha, wahi 500 tha. Isliye naam ka match ab POORA PHP me hota hai;
+        // SQL me sirf numeric aur CAST kiye hue date comparisons bachte hain.
+        $phpNameFilter = false;
+        if ($categoryId > 0 && $hasCategoryCol && $catName !== '') {
+            $phpNameFilter = true;   // saare active rooms lekar PHP me filter karenge
+        } elseif ($categoryId > 0 && $hasCategoryCol) {
+            $sql .= " AND r.category_id = ?";
+            $params[] = $categoryId;
+        }
 
-        Response::success($rooms);
+        if ($onlyFree) {
+            $sql .= " HAVING is_available = 1";
+        }
+        $sql .= " ORDER BY CAST(r.room_no AS UNSIGNED), r.room_no";
+
+        try {
+            $rows = Database::all($sql, $params);
+        } catch (Throwable $e) {
+            // TEMP DEBUG: generic 'unexpected error' ki jagah asli DB error browser me dikhao —
+            // warna live server ka asli reason kahin nazar hi nahi aata.
+            Response::error('Available-rooms SQL error: ' . $e->getMessage(), 500);
+        }
+
+        if ($phpNameFilter) {
+            $norm = static function ($s): string {
+                $s = trim((string) $s);
+                $s = preg_replace('/\s+/', ' ', $s) ?? $s;
+                return function_exists('mb_strtolower') ? mb_strtolower($s, 'UTF-8') : strtolower($s);
+            };
+            $catN = $norm($catName);
+            $rows = array_values(array_filter($rows, static function (array $r) use ($norm, $catN, $categoryId): bool {
+                if ((int) ($r['category_id'] ?? 0) === (int) $categoryId) return true;
+                $rt = $norm($r['room_type'] ?? '');
+                return $rt !== '' && $catN !== '' && (str_contains($rt, $catN) || str_contains($catN, $rt));
+            }));
+        }
+
+        Response::success($rows);
     }
 
     /** Accepts data-URL (base64) or http(s) image for photos. Max ~2 MB. */
@@ -435,24 +603,27 @@ class GuestHouseController
         $payload = Auth::requireFrontDesk();
         $this->ensureAdvancedSchema();
 
+        // Walk-in form ki saari details optional hain — client baad me edit kar sakta hai.
+        // Sirf room zaroori hai, kyunki stay kisi room me hi hota hai.
         $v = Validator::make($req->body())
-            ->required('guest_name', 'Guest Name')->string('guest_name', 2, 100)
-            ->required('phone', 'Phone Number')->string('phone', 7, 20)->phone('phone', 'Phone Number')
-            ->required('category_id', 'Room Category')->integer('category_id', 1)
-            ->required('room_no', 'Room Number')->string('room_no', 1, 20)
-            ->required('address', 'Address')->string('address', 5, 255)
-            ->string('id_proof', 0, 120);
-
+            ->string('guest_name', 0, 100)->string('phone', 0, 20)
+            ->string('address', 0, 255)->string('id_proof', 0, 120);
         if ($v->fails()) Response::unprocessable('Validation failed.', $v->errors());
 
-        $roomNo = $req->bodyStr('room_no');
-        $fromSql = $this->parseDateTime('from_date', $req->bodyStr('from_date'));
-        $toSql = $this->parseDateTime('to_date', $req->bodyStr('to_date'));
-        $expectedCheckout = $req->bodyStr('expected_checkout_at') ?: $toSql;
-        $expectedCheckoutSql = $this->parseDateTime('expected_checkout_at', $expectedCheckout);
-        if (strtotime($toSql) <= strtotime($fromSql)) {
-            Response::unprocessable('Validation failed.', ['to_date' => ['To date must be after from date.']]);
+        $roomNo = trim($req->bodyStr('room_no'));
+        if ($roomNo === '') {
+            Response::unprocessable('Validation failed.', ['room_no' => ['Room select karein.']]);
         }
+
+        $fromTs = strtotime(trim($req->bodyStr('from_date'))) ?: time();
+        $toTs   = strtotime(trim($req->bodyStr('to_date'))) ?: ($fromTs + 86400);
+        if ($toTs <= $fromTs) $toTs = $fromTs + 86400;
+        $fromSql = date('Y-m-d H:i:s', $fromTs);
+        $toSql   = date('Y-m-d H:i:s', $toTs);
+
+        $expectedTs = strtotime(trim($req->bodyStr('expected_checkout_at'))) ?: $toTs;
+        if ($expectedTs < $fromTs) $expectedTs = $toTs;
+        $expectedCheckoutSql = date('Y-m-d H:i:s', $expectedTs);
 
         $totalAmount = max(0, $req->bodyFloat('total_amount', 0));
         $advanceAmount = max(0, $req->bodyFloat('advance_amount', 0));
@@ -481,7 +652,8 @@ class GuestHouseController
                 Database::rollback();
                 Response::notFound('Room not found.');
             }
-            if ((int)$room['category_id'] !== (int)$req->bodyInt('category_id')) {
+            $pickedCategory = (int)$req->bodyInt('category_id', 0);
+            if ($pickedCategory > 0 && (int)$room['category_id'] !== $pickedCategory) {
                 Database::rollback();
                 Response::error("Selected room does not belong to chosen category.", 422);
             }
@@ -493,8 +665,8 @@ class GuestHouseController
                  FROM guest_house_guests
                  WHERE room_id = ?
                    AND status IN ('reserved', 'checked_in')
-                   AND (? < COALESCE(booking_to, expected_checkout_at, check_out_at, '9999-12-31 23:59:59'))
-                   AND (? > COALESCE(booking_from, check_in_at, created_at))
+                   AND (? < CAST(COALESCE(booking_to, expected_checkout_at, check_out_at, '9999-12-31 23:59:59') AS DATETIME))
+                   AND (? > CAST(COALESCE(booking_from, check_in_at, created_at) AS DATETIME))
                  LIMIT 1",
                 [(int)$room['id'], $fromSql, $toSql]
             );
@@ -632,8 +804,8 @@ class GuestHouseController
              FROM guest_house_guests
              WHERE room_id = ?
                AND status IN ('reserved', 'checked_in')
-               AND (? < COALESCE(booking_to, expected_checkout_at, check_out_at, '9999-12-31 23:59:59'))
-               AND (? > COALESCE(booking_from, check_in_at, created_at))
+               AND (? < CAST(COALESCE(booking_to, expected_checkout_at, check_out_at, '9999-12-31 23:59:59') AS DATETIME))
+               AND (? > CAST(COALESCE(booking_from, check_in_at, created_at) AS DATETIME))
              LIMIT 1",
             [(int)$room['id'], $fromSql, $toSql]
         );
@@ -742,8 +914,8 @@ class GuestHouseController
                  WHERE room_id = ?
                    AND id <> ?
                    AND status IN ('reserved', 'checked_in')
-                   AND (? < COALESCE(booking_to, expected_checkout_at, check_out_at, '9999-12-31 23:59:59'))
-                   AND (? > COALESCE(booking_from, check_in_at, created_at))
+                   AND (? < CAST(COALESCE(booking_to, expected_checkout_at, check_out_at, '9999-12-31 23:59:59') AS DATETIME))
+                   AND (? > CAST(COALESCE(booking_from, check_in_at, created_at) AS DATETIME))
                  LIMIT 1",
                 [(int)$room['id'], $guestId, $fromSql, $toSql]
             );
@@ -964,6 +1136,15 @@ class GuestHouseController
             $categoryId = $room['category_id'] !== null ? (int)$room['category_id'] : null;
         }
 
+        // Category badli to room_type bhi usi naam par set karo (dono kabhi mismatch na hon)
+        if ($categoryId !== null && (int) $categoryId > 0) {
+            $catName = (string) Database::value(
+                "SELECT name FROM guest_house_room_categories WHERE id = ?",
+                [(int) $categoryId]
+            );
+            if (trim($catName) !== '') $roomType = trim($catName);
+        }
+
         Database::run(
             "UPDATE guest_house_rooms SET room_no = ?, category_id = ?, status = ?, rent = ?, room_type = ?, floor_no = ?, updated_at = NOW() WHERE id = ?",
             [$roomNo, $categoryId, $status, $rent, $roomType ?: null, $floorNo, $roomId]
@@ -1106,7 +1287,8 @@ class GuestHouseController
         ]);
     }
 
-    /** Delete (deactivate) a room — blocked while a guest is checked in. */
+    /** Delete a room. Hard delete when there is no stay history; otherwise rename it and
+     *  mark it inactive so the room number can be reused. */
     public function deleteRoom(Request $req, int $roomId): never
     {
         $payload = Auth::requireFrontDesk();
@@ -1121,9 +1303,51 @@ class GuestHouseController
             Response::error('Is room me guest booked/checked-in hai. Pehle checkout ya booking cancel karein.', 409);
         }
 
-        Database::run('UPDATE guest_house_rooms SET is_active = 0, updated_at = NOW() WHERE id = ?', [$roomId]);
-        Helper::log((int)$payload['admin_id'], 'delete_room', 'guest_house', $roomId, "Room {$room['room_no']} deleted (deactivated).");
-        Response::success(null, 'Room delete ho gaya.');
+        $hardDeleted = false;
+        $archived = false;
+
+        try {
+            Database::run('DELETE FROM guest_house_rooms WHERE id = ?', [$roomId]);
+            $hardDeleted = true;
+        } catch (Throwable $e) {
+            // Purani history is room ko reference karti hai — room number free kar ke inactive kar do.
+            $hasActiveCol = $this->columnExists('guest_house_rooms', 'is_active');
+            $suffix = '-del-' . $roomId;
+            $base = (string) $room['room_no'];
+            if (mb_strlen($base) > 20 - mb_strlen($suffix)) {
+                $base = mb_substr($base, 0, 20 - mb_strlen($suffix));
+            }
+            $freedNo = $base . $suffix;
+            try {
+                if ($hasActiveCol) {
+                    Database::run(
+                        "UPDATE guest_house_rooms SET is_active = 0, room_no = ?, status = 'available', updated_at = NOW() WHERE id = ?",
+                        [$freedNo, $roomId]
+                    );
+                } else {
+                    Database::run(
+                        "UPDATE guest_house_rooms SET room_no = ?, status = 'available', updated_at = NOW() WHERE id = ?",
+                        [$freedNo, $roomId]
+                    );
+                }
+                $archived = true;
+            } catch (Throwable $e2) {
+                Response::serverError('Room delete nahi hua. Thodi der baad try karein.');
+            }
+        }
+
+        Helper::log(
+            (int)$payload['admin_id'],
+            'delete_room',
+            'guest_house',
+            $roomId,
+            "Room {$room['room_no']} deleted (" . ($hardDeleted ? 'removed' : 'archived, number freed') . ').'
+        );
+
+        Response::success(
+            ['id' => $roomId, 'hard_deleted' => $hardDeleted, 'archived' => $archived],
+            $hardDeleted ? '' : ''
+        );
     }
 
     /** Cancel a booking (reserved stay) — frees the room date block. */
@@ -1169,7 +1393,7 @@ class GuestHouseController
         $rooms = Database::all(
             "SELECT r.id, r.room_no, r.room_type, r.floor_no, r.status,
                     " . ($hasCategoryCol ? "r.category_id," : "NULL AS category_id,") . "
-                    " . ($joinCategory ? "COALESCE(c.name, r.room_type, 'Standard')" : "COALESCE(r.room_type, 'Standard')") . " AS category_name
+                    " . ($joinCategory ? "COALESCE(c.name, NULLIF(r.room_type, ''), 'Uncategorised')" : "COALESCE(NULLIF(r.room_type, ''), 'Uncategorised')") . " AS category_name
              FROM guest_house_rooms r
              " . ($joinCategory ? "LEFT JOIN guest_house_room_categories c ON c.id = r.category_id" : "") . "
              WHERE r.is_active = 1

@@ -3,6 +3,8 @@
  * Uses /version.json (never precached) so updates work even when
  * the old service worker is still serving a cached shell.
  */
+import { appUrl } from './basePath'
+
 const STORAGE_KEY = 'app_build_id'
 
 async function clearAllCaches() {
@@ -35,7 +37,7 @@ export async function hardRefreshToLatest() {
  */
 export async function syncAppVersion() {
   try {
-    const res = await fetch(`/version.json?t=${Date.now()}`, {
+    const res = await fetch(`${appUrl('version.json')}?t=${Date.now()}`, {
       cache: 'no-store',
       headers: { 'Cache-Control': 'no-cache' },
     })

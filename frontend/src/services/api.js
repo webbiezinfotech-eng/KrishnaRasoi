@@ -5,7 +5,7 @@ import axios from "axios"
 const isLocal = typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname)
 const API_BASE_URL = isLocal ? "/api" : "/backend"
 
-const api = axios.create({ baseURL: API_BASE_URL, headers: { "Content-Type": "application/json" }, timeout: 15000 })
+const api = axios.create({ baseURL: API_BASE_URL, headers: { "Content-Type": "application/json" }, timeout: 30000 })
 
 api.interceptors.request.use(cfg => {
   const token = localStorage.getItem("auth_token")
@@ -89,6 +89,7 @@ export const messagingAPI = {
 export const guestHouseAPI = {
   updateRoom: (id, d) => api.put(`/guest-house/rooms/${id}`, d),
   deleteRoom: id => api.delete(`/guest-house/rooms/${id}`),
+  deleteRoomFallback: id => api.post(`/guest-house/rooms/${id}/delete`),
   addCharge: (id, d) => api.post(`/guest-house/guests/${id}/charges`, d),
   charges: id => api.get(`/guest-house/guests/${id}/charges`),
   finalBill: id => api.get(`/guest-house/guests/${id}/final-bill`),

@@ -22,6 +22,9 @@ function versionJsonPlugin() {
 }
 
 export default defineConfig({
+  // Relative base: same build works at domain root (/) or inside a folder (/dist/, /app/).
+  // Absolute '/' was the reason a Hostinger upload showed a blank white page.
+  base: './',
   plugins: [
     react(),
     versionJsonPlugin(),
@@ -36,8 +39,8 @@ export default defineConfig({
         background_color: '#fafafa',
         display: 'standalone',
         orientation: 'any',
-        scope: '/',
-        start_url: '/',
+        scope: '.',
+        start_url: '.',
         categories: ['business', 'food'],
         icons: [
           {
@@ -64,15 +67,15 @@ export default defineConfig({
         clientsClaim: true,
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         // Never let the SW cache the version ping or the one-time updater page
-        navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/backend/, /^\/version\.json/, /^\/update-app\.html/],
+        navigateFallback: 'index.html',
+        navigateFallbackDenylist: [/\/backend\//, /\/version\.json$/, /\/update-app\.html$/],
         runtimeCaching: [
           {
-            urlPattern: /\/version\.json$/i,
+            urlPattern: /version\.json$/i,
             handler: 'NetworkOnly',
           },
           {
-            urlPattern: /\/update-app\.html$/i,
+            urlPattern: /update-app\.html$/i,
             handler: 'NetworkOnly',
           },
           {

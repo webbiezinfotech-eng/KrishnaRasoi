@@ -54,9 +54,32 @@ require_once __DIR__ . '/controllers/BackupController.php';
 
 // ---- CORS ----
 $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-if (in_array($origin, ALLOWED_ORIGINS, true)) {
+$selfHost = ($_SERVER['HTTP_HOST'] ?? '');
+// Same-domain deploy (Hostinger): apni hi origin allow karo, warna preflight block hota hai.
+$sameOrigin = $origin !== '' && $selfHost !== '' && (
+    str_contains($origin, '://' . $selfHost)
+    || str_contains($origin, '://www.' . preg_replace('/^www\./', '', $selfHost))
+);
+if ($origin !== '' && (in_array($origin, ALLOWED_ORIGINS, true) || $sameOrigin)) {
     header("Access-Control-Allow-Origin: $origin");
     header('Vary: Origin');
+    header('Access-Control-Allow-Credentials: true');
+}
+// Kuch shared hosts Authorization header strip kar dete hain — ise wapas inject karo
+// warna har API "token required" 401 deti hai.
+if (empty($_SERVER['HTTP_AUTHORIZATION'])) {
+    $hdr = null;
+    if (function_exists('getallheaders')) {
+        foreach ((array) @getallheaders() as $k => $v) {
+            if (strcasecmp((string)$k, 'Authorization') === 0) { $hdr = (string)$v; break; }
+        }
+    }
+    if (!$hdr && !empty($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+        $hdr = (string) $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
+    }
+    if ($hdr) {
+        $_SERVER['HTTP_AUTHORIZATION'] = $hdr;
+    }
 }
 header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
@@ -336,6 +359,10 @@ try {
 
     // Guest house: room edit / delete, booking cancel, Kripa Shanti reports
     if (preg_match('#^/guest-house/rooms/(\d+)$#', $uri, $m) && $method === 'DELETE') {
+        $gh->deleteRoom($req, (int)$m[1]);
+    }
+    // Same action over POST — for hosts/proxies that block the DELETE verb.
+    if (preg_match('#^/guest-house/rooms/(\d+)/delete$#', $uri, $m) && $method === 'POST') {
         $gh->deleteRoom($req, (int)$m[1]);
     }
     if (preg_match('#^/guest-house/guests/(\d+)/cancel$#', $uri, $m) && $method === 'POST') {

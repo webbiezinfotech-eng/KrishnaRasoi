@@ -31,10 +31,12 @@ function PrivateRoute({ children }) {
 
 /** Permission-gated route — server bhi wahi permission check karta hai. */
 function PermRoute({ perm, children }) {
-  const { isAuthenticated, loading, role, can } = useAuth()
+  const { isAuthenticated, loading, can, isGuestHouseScope } = useAuth()
   if (loading) return <div className="h-screen flex items-center justify-center text-surface-400 text-sm">Loading...</div>
   if (!isAuthenticated) return <Navigate to="/login" replace />
-  if (role !== 'admin' && !can(perm)) {
+  // Kripa Shanti login se restaurant ka route kholne ki koshish → seedha guest house.
+  if (isGuestHouseScope && perm !== 'guest_house') return <Navigate to="/guest-house" replace />
+  if (!can(perm)) {
     return (
       <div className="max-w-lg mx-auto mt-16 card p-8 text-center">
         <p className="text-4xl mb-3">🔒</p>
@@ -86,12 +88,12 @@ export default function App() {
 }
 
 function RoleHomeRedirect() {
-  const { role, permissions } = useAuth()
-  return <Navigate to={homePathForRole(role, permissions)} replace />
+  const { role, permissions, scope } = useAuth()
+  return <Navigate to={homePathForRole(role, permissions, scope)} replace />
 }
 
 function CatchAllRedirect() {
-  const { isAuthenticated, role, permissions } = useAuth()
+  const { isAuthenticated, role, permissions, scope } = useAuth()
   if (!isAuthenticated) return <Navigate to="/login" replace />
-  return <Navigate to={homePathForRole(role, permissions)} replace />
+  return <Navigate to={homePathForRole(role, permissions, scope)} replace />
 }

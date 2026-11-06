@@ -27,7 +27,7 @@ const ADMIN_NAV = [
 ]
 
 export default function AppLayout() {
-  const { admin, logout, isWaiter, role, can, permissions } = useAuth()
+  const { admin, logout, isWaiter, role, can, permissions, scope } = useAuth()
   const navigate = useNavigate()
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
@@ -44,6 +44,7 @@ export default function AppLayout() {
       .filter(Boolean)
   }, [can, role, permissions])
 
+  const isGhScope = scope === 'guest_house'
   const roleLabel = role === 'admin' ? 'Administrator'
     : role === 'manager' ? 'Manager'
     : role === 'reception' ? 'Reception'
@@ -71,10 +72,14 @@ export default function AppLayout() {
         }`}
       >
         <div className="px-5 py-5 border-b border-surface-200">
-          <h1 className="font-display text-surface-900 text-xl font-bold leading-tight">Restaurant<br/><span className="text-brand-600">{brandTitle}</span></h1>
-          {role !== 'admin' && (
-            <p className="text-xs text-surface-500 mt-1">{roleLabel} login · {permissions.length} modules</p>
-          )}
+          <h1 className="font-display text-surface-900 text-xl font-bold leading-tight">
+            {isGhScope
+              ? <>Kripa Shanti<br/><span className="text-emerald-600">Atithi Bhavan</span></>
+              : <>Restaurant<br/><span className="text-brand-600">{brandTitle}</span></>}
+          </h1>
+          <p className="text-xs text-surface-500 mt-1">
+            {isGhScope ? 'Guest House login' : role !== 'admin' ? `${roleLabel} login · ${permissions.length} modules` : 'Administrator'}
+          </p>
         </div>
 
         <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-0.5">
@@ -120,7 +125,7 @@ export default function AppLayout() {
       <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
         <header className="no-print lg:hidden h-14 border-b border-surface-200 bg-white flex items-center justify-between px-4">
           <button className="btn-secondary btn btn-sm" onClick={() => setSidebarOpen(true)}>☰ Menu</button>
-          <p className="font-display text-surface-900 font-semibold">Restaurant Manager</p>
+          <p className="font-display text-surface-900 font-semibold">{isGhScope ? 'Kripa Shanti' : 'Restaurant Manager'}</p>
         </header>
         <main className="flex-1 overflow-y-auto p-3 sm:p-4 lg:p-6">
           <Outlet />

@@ -9,7 +9,8 @@ define('APP_DEBUG', APP_ENV === 'development');
 define('JWT_SECRET', 'CHANGE_THIS_TO_A_RANDOM_64_CHAR_STRING_IN_PRODUCTION_!!!!!!!!');
 define('JWT_EXPIRY', 86400);   // 24 hours
 
-// Allowed CORS origins
+// Allowed CORS origins (dev). Live par app aur API same domain par hote hain,
+// isliye index.php request ke apne host/origin ko bhi allow karta hai.
 define('ALLOWED_ORIGINS', [
     'http://localhost:3000',
     'http://localhost:5173',

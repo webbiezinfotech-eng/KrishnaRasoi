@@ -10,10 +10,30 @@ function toLocalInputValue(d) {
   const date = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
   return date.toISOString().slice(0, 16)
 }
+/* Guest house standard timing: check-in 11:00 AM, check-out 12:00 PM (next day) */
+const CHECK_IN_HOUR = 11
+const CHECK_OUT_HOUR = 12
+const pad2 = n => String(n).padStart(2, '0')
+const dateOnly = v => String(v || '').slice(0, 10)
+function combineDateTime(dateStr, hour) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || ''))) return ''
+  return `${dateStr}T${pad2(hour)}:00`
+}
+function addDaysTo(dateVal, days) {
+  const day = dateOnly(dateVal) || toLocalInputValue(new Date()).slice(0, 10)
+  const base = new Date(`${day}T12:00:00`)
+  if (Number.isNaN(base.getTime())) return ''
+  base.setDate(base.getDate() + days)
+  return `${base.getFullYear()}-${pad2(base.getMonth() + 1)}-${pad2(base.getDate())}`
+}
+/* To date hamesha from date + 1 din, 12:00 PM checkout */
+function checkoutFor(fromVal) {
+  const fromDate = dateOnly(fromVal) || toLocalInputValue(new Date()).slice(0, 10)
+  return combineDateTime(addDaysTo(fromDate, 1), CHECK_OUT_HOUR)
+}
 function defaultDateRange() {
-  const from = new Date()
-  const to = new Date(from.getTime() + 24 * 60 * 60 * 1000)
-  return { from: toLocalInputValue(from), to: toLocalInputValue(to) }
+  const from = combineDateTime(toLocalInputValue(new Date()).slice(0, 10), CHECK_IN_HOUR)
+  return { from, to: checkoutFor(from) }
 }
 
 function Stat({ label, value, color }) {
@@ -108,11 +128,22 @@ export default function GuestHouse() {
   useEffect(() => { load() }, [])
 
   const loadAvailable = async () => {
-    if (!form.category_id || !form.from_date || !form.to_date) return
+    // Pehle category, phir usi category ke rooms + free/occupied tag.
+    if (!form.category_id) { setAvailableRooms([]); return }
     try {
-      const r = await guestHouseAPI.availableRooms({ category_id: form.category_id, from_date: form.from_date, to_date: form.to_date })
+      const r = await guestHouseAPI.availableRooms({
+        category_id: form.category_id,
+        from_date: form.from_date || '',
+        to_date: form.to_date || '',
+      })
       setAvailableRooms(r.data.data || [])
-    } catch { setAvailableRooms([]) }
+    } catch (e) {
+      setAvailableRooms([])
+      // Silent fail mat karo — warna dropdown "Is category me koi room nahi" dikha kar
+      // galat message deta tha jabki asli problem API call fail hona thi (purana backend,
+      // expired session, server error waghera). Ab asli error dikhao.
+      toast.error(e.response?.data?.message || 'Rooms load nahi hue. Page refresh karke dobara try karein.')
+    }
   }
   useEffect(() => { if (showGuestModal) loadAvailable() /* eslint-disable-next-line */ }, [form.category_id, form.from_date, form.to_date, showGuestModal])
 
@@ -164,8 +195,8 @@ export default function GuestHouse() {
 
   const onCheckIn = async e => {
     e.preventDefault()
-    if (!form.guest_name || !form.phone || !form.category_id || !form.room_no || !form.address) {
-      toast.error('Guest name, mobile, address, category aur room zaroori hai.')
+    if (!form.room_no) {
+      toast.error('Room number select karna zaroori hai.')
       return
     }
     setSubmitting(true)
@@ -347,7 +378,6 @@ export default function GuestHouse() {
         room_no: roomEditForm.room_no,
         floor_no: roomEditForm.floor_no,
         category_id: Number(roomEditForm.category_id) || undefined,
-        room_type: roomEditForm.room_type,
         rent: Number(roomEditForm.rent || 0),
         status: roomEditForm.status,
       })
@@ -359,9 +389,18 @@ export default function GuestHouse() {
   }
 
   const onDeleteRoom = async room => {
-    if (!window.confirm(`Room ${room.room_no} delete karein? (record history safe rahegi)`)) return
+    if (!window.confirm(`Room ${room.room_no} delete karein?`)) return
     try {
-      await guestHouseAPI.deleteRoom(room.id)
+      try {
+        await guestHouseAPI.deleteRoom(room.id)
+      } catch (err) {
+        const st = err.response?.status
+        if (st === 404 || st === 405 || st === 501) {
+          await guestHouseAPI.deleteRoomFallback(room.id)
+        } else {
+          throw err
+        }
+      }
       toast.success('Room delete ho gaya.')
       load()
     } catch (err) {
@@ -378,7 +417,7 @@ export default function GuestHouse() {
       await guestHouseAPI.createRoom({
         room_no: roomForm.room_no, floor_no: roomForm.floor_no,
         category_id: Number(roomForm.category_id),
-        room_type: roomForm.room_type, rent: Number(roomForm.rent || 0),
+        rent: Number(roomForm.rent || 0),
       })
       toast.success('Room add ho gaya.')
       setRoomForm({ room_no: '', floor_no: '', category_id: '', room_type: '', rent: '' })
@@ -475,7 +514,7 @@ export default function GuestHouse() {
                 <span className={`badge ${room.status === 'available' ? 'badge-green' : room.status === 'booked' ? 'badge-amber' : 'badge-gray'}`}>{room.status}</span>
               </div>
               <p className="text-xs text-surface-500">
-                {room.category_name || room.room_type || 'Standard'}
+                {room.category_name || 'Uncategorised'}
                 {room.floor_no ? ` · Floor ${room.floor_no}` : ''}
                 {Number(room.rent) > 0 ? ` · ₹${Number(room.rent).toFixed(0)}/night` : ''}
               </p>
@@ -626,30 +665,67 @@ export default function GuestHouse() {
       {/* ---------------- Walk-in / Check-in modal ---------------- */}
       <Modal open={showGuestModal} onClose={() => setShowGuestModal(false)} title={form.booking_id ? 'Convert Booking → Check-in' : 'Walk-in Guest Check-in'} size="md">
         <form className="space-y-3" onSubmit={onCheckIn}>
+          {/* <div className="rounded-lg bg-surface-50 border border-surface-200 px-3 py-2 text-xs text-surface-600">
+            Saare fields optional hain. Jo available ho wahi bharein, baaki baad me <strong>Edit</strong> se kabhi bhi add ya change kar sakte hain.
+            <br />Standard timing: check-in <strong>11:00 AM</strong>, check-out <strong>12:00 PM</strong> (agla din). Apne hisaab se badal sakte hain.
+          </div> */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="form-group"><label className="label">Guest Name *</label>
-              <input className="input" value={form.guest_name} onChange={e => setForm(p => ({ ...p, guest_name: e.target.value }))} /></div>
-            <div className="form-group"><label className="label">Mobile Number *</label>
-              <input className="input" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
-            <div className="form-group md:col-span-2"><label className="label">Address *</label>
-              <textarea rows={2} className="textarea" value={form.address} onChange={e => setForm(p => ({ ...p, address: e.target.value }))} /></div>
-            <div className="form-group"><label className="label">ID Proof Number</label>
-              <input className="input" value={form.id_proof} onChange={e => setForm(p => ({ ...p, id_proof: e.target.value }))} placeholder="Aadhar / DL / Passport" /></div>
-            <div className="form-group"><label className="label">Room Category *</label>
+            <div className="form-group"><label className="label">Guest Name</label>
+              <input className="input" value={form.guest_name} onChange={e => setForm(p => ({ ...p, guest_name: e.target.value }))} placeholder="Customer Name" /></div>
+            <div className="form-group"><label className="label">Mobile Number</label>
+              <input className="input" value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} placeholder="+91 XXXXXXXXXX" /></div>
+            <div className="form-group md:col-span-2"><label className="label">Address</label>
+              <textarea rows={2} className="textarea" value={form.address} onChange={e => setForm(p => ({ ...p, address: e.target.value }))} placeholder="Address" /></div>
+            <div className="form-group"><label className="label">ID Proof</label>
+              <input className="input" value={form.id_proof} onChange={e => setForm(p => ({ ...p, id_proof: e.target.value }))} placeholder="Aadhaar / PAN / Passport / Driving License" /></div>
+            <div className="form-group"><label className="label">Room Category</label>
               <select className="select" value={form.category_id} onChange={e => setForm(p => ({ ...p, category_id: e.target.value, room_no: '' }))}>
                 <option value="">Select category</option>
                 {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select></div>
-            <div className="form-group"><label className="label">From Date &amp; Time *</label>
-              <input type="datetime-local" className="input" value={form.from_date} onChange={e => setForm(p => ({ ...p, from_date: e.target.value }))} /></div>
-            <div className="form-group"><label className="label">To Date &amp; Time *</label>
-              <input type="datetime-local" className="input" value={form.to_date} onChange={e => setForm(p => ({ ...p, to_date: e.target.value, expected_checkout_at: e.target.value }))} /></div>
-            <div className="form-group"><label className="label">Room Number *</label>
-              <select className="select" value={form.room_no} onChange={e => setForm(p => ({ ...p, room_no: e.target.value }))}>
-                <option value="">Select room</option>
-                {availableRooms.map(r => <option key={r.id || r.room_no} value={r.room_no}>{r.room_no}{r.rent ? ` · ₹${Number(r.rent).toFixed(0)}` : ''}</option>)}
-              </select></div>
-            <div className="form-group"><label className="label">Expected Checkout *</label>
+            <div className="form-group">
+              <label className="label">Room Number <span className="text-surface-400 font-normal">(check-in ke liye zaroori)</span></label>
+              <select className="select" value={form.room_no} disabled={!form.category_id}
+                onChange={e => setForm(p => ({ ...p, room_no: e.target.value }))}>
+                <option value="">
+                  {!form.category_id
+                    ? 'Pehle room category select karein'
+                    : availableRooms.length === 0
+                      ? 'Is category me koi room nahi'
+                      : 'Select room'}
+                </option>
+                {availableRooms.map(r => {
+                  const free = r.is_available === undefined ? true : Number(r.is_available) === 1
+                  return (
+                    <option key={r.id || r.room_no} value={r.room_no} disabled={!free}>
+                      {r.room_no} — {free ? 'Available' : 'Occupied'}
+                      {Number(r.rent) > 0 ? ` · ₹${Number(r.rent).toFixed(0)}/night` : ''}
+                    </option>
+                  )
+                })}
+              </select>
+              {form.category_id && availableRooms.length > 0 && (
+                <p className="text-xs text-surface-400 mt-1">
+                  {availableRooms.filter(r => r.is_available === undefined || Number(r.is_available) === 1).length} free
+                  · {availableRooms.filter(r => Number(r.is_available) === 0).length} occupied
+                </p>
+              )}
+              {form.category_id && availableRooms.length === 0 && (
+                <p className="text-xs text-amber-600 mt-1">Is category me abhi koi room nahi hai. Pehle room add karein.</p>
+              )}
+            </div>
+            <div className="form-group"><label className="label">From Date &amp; Time</label>
+              <input type="datetime-local" className="input" value={form.from_date}
+                onChange={e => setForm(p => {
+                  const from = e.target.value
+                  const checkOut = checkoutFor(from)
+                  return { ...p, from_date: from, to_date: checkOut, expected_checkout_at: checkOut }
+                })} />
+              <p className="text-xs text-surface-400 mt-1"></p></div>
+            <div className="form-group"><label className="label">To Date &amp; Time</label>
+              <input type="datetime-local" className="input" value={form.to_date}
+                onChange={e => setForm(p => ({ ...p, to_date: e.target.value, expected_checkout_at: e.target.value }))} /></div>
+            <div className="form-group"><label className="label">Expected Checkout</label>
               <input type="datetime-local" className="input" value={form.expected_checkout_at} onChange={e => setForm(p => ({ ...p, expected_checkout_at: e.target.value }))} /></div>
             <div className="form-group"><label className="label">Adults</label>
               <input type="number" min="1" className="input" value={form.adults_count} onChange={e => setForm(p => ({ ...p, adults_count: e.target.value }))} /></div>
@@ -880,8 +956,6 @@ export default function GuestHouse() {
               </select>
               <button type="button" className="btn-secondary btn btn-sm" onClick={() => { setShowRoomModal(false); setShowCategoryModal(true) }}>+ New</button>
             </div></div>
-          <div className="form-group"><label className="label">Room Type</label>
-            <input className="input" value={roomForm.room_type} onChange={e => setRoomForm(p => ({ ...p, room_type: e.target.value }))} placeholder="Standard / Deluxe" /></div>
           <div className="form-group"><label className="label">Rent per Night (₹)</label>
             <input type="number" step="0.01" className="input" value={roomForm.rent} onChange={e => setRoomForm(p => ({ ...p, rent: e.target.value }))} /></div>
           <div className="flex justify-end gap-2">
@@ -904,8 +978,6 @@ export default function GuestHouse() {
                 <option value="">Select category</option>
                 {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select></div>
-            <div className="form-group"><label className="label">Room Type</label>
-              <input className="input" value={roomEditForm.room_type} onChange={e => setRoomEditForm(p => ({ ...p, room_type: e.target.value }))} /></div>
             <div className="form-group"><label className="label">Rent per Night (₹)</label>
               <input type="number" step="0.01" className="input" value={roomEditForm.rent} onChange={e => setRoomEditForm(p => ({ ...p, rent: e.target.value }))} /></div>
             <div className="form-group"><label className="label">Status</label>

@@ -18,10 +18,11 @@ class AuthController
         return Auth::normalizePermissions($raw, $role);
     }
 
-    private static function payloadFor(array $user): array
+    private static function payloadFor(array $user, string $scope = 'restaurant'): array
     {
         $role  = in_array($user['role'] ?? 'admin', Auth::ROLES, true) ? $user['role'] : 'admin';
         return [
+            'scope'       => $scope === 'guest_house' ? 'guest_house' : 'restaurant',
             'id'          => (int)$user['id'],
             'username'    => $user['username'],
             'email'       => $user['email'],
@@ -58,7 +59,9 @@ class AuthController
             Response::error('Invalid username or password.', 401);
         }
 
-        $admin = self::payloadFor($user);
+        // Login darwaza: 'restaurant' (pura software) ya 'guest_house' (sirf Kripa Shanti)
+        $scope = $req->bodyStr('scope', 'restaurant') === 'guest_house' ? 'guest_house' : 'restaurant';
+        $admin = self::payloadFor($user, $scope);
 
         Database::run(
             'UPDATE admin_users SET last_login_at = NOW() WHERE id = ?',
@@ -69,6 +72,7 @@ class AuthController
             'admin_id'    => $user['id'],
             'username'    => $user['username'],
             'role'        => $admin['role'],
+            'scope'       => $scope,
             'permissions' => $admin['permissions'],
         ]);
 
@@ -100,7 +104,7 @@ class AuthController
 
         if (!$user) Response::notFound('Admin user not found.');
 
-        $admin = self::payloadFor($user);
+        $admin = self::payloadFor($user, Auth::scope($payload));
         $admin['last_login_at'] = $user['last_login_at'] ?? null;
         $admin['created_at']    = $user['created_at'] ?? null;
         $admin['is_active']     = (bool)($user['is_active'] ?? 1);

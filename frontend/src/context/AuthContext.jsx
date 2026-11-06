@@ -9,10 +9,14 @@ const ALL_PERMISSIONS = [
   "settings", "users",
 ]
 
+const SCOPE_KEY = "login_scope"
+
 export function AuthProvider({ children }) {
   const [admin, setAdmin] = useState(() => {
     try { return JSON.parse(localStorage.getItem("admin_user")) } catch { return null }
   })
+  // Kis darwaze se login hua: 'restaurant' (pura software) ya 'guest_house' (sirf Kripa Shanti)
+  const [scope, setScope] = useState(() => localStorage.getItem(SCOPE_KEY) || "restaurant")
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -26,11 +30,13 @@ export function AuthProvider({ children }) {
     }
   }, [])
 
-  const login = async (username, password) => {
+  const login = async (username, password, loginScope = "restaurant") => {
     const res = await authAPI.login({ username, password })
     const { token, admin: user } = res.data.data
     localStorage.setItem("auth_token", token)
     localStorage.setItem("admin_user", JSON.stringify(user))
+    localStorage.setItem(SCOPE_KEY, loginScope)
+    setScope(loginScope)
     setAdmin(user)
     return user
   }
@@ -48,11 +54,19 @@ export function AuthProvider({ children }) {
     ? admin.permissions
     : role === "admin" ? ALL_PERMISSIONS : []
 
+  // Kripa Shanti ke darwaze se login = sirf guest house module. Admin ho ya manager,
+  // restaurant ka koi bhi section (dashboard, tables, bills, menu, reports) nahi khulega.
+  const isGuestHouseScope = scope === "guest_house"
+
   const can = useCallback((permission) => {
     if (!permission) return true
+    if (isGuestHouseScope) {
+      if (permission !== "guest_house") return false
+      return role === "admin" || permissions.includes("guest_house")
+    }
     if (role === "admin") return true
     return permissions.includes(permission)
-  }, [permissions, role])
+  }, [permissions, role, isGuestHouseScope])
 
   const isWaiter = role === "waiter"
   const isAdmin = role === "admin"
@@ -70,6 +84,8 @@ export function AuthProvider({ children }) {
       role,
       permissions,
       can,
+      scope,
+      isGuestHouseScope,
       allPermissions: ALL_PERMISSIONS,
       isWaiter,
       isAdmin,
@@ -85,8 +101,10 @@ export function AuthProvider({ children }) {
 export const useAuth = () => useContext(AuthContext)
 
 /** Home path after login, based on the modules the user actually has. */
-export function homePathForRole(role, permissions) {
+export function homePathForRole(role, permissions, scope = "restaurant") {
   const perms = Array.isArray(permissions) ? permissions : []
+  // Kripa Shanti login → hamesha guest house screen, chahe admin hi ho.
+  if (scope === "guest_house") return "/guest-house"
   if (role === "admin") return "/dashboard"
   if (perms.includes("guest_house") && !perms.includes("tables")) return "/guest-house"
   if (perms.includes("tables") || perms.includes("orders")) return "/tables"
