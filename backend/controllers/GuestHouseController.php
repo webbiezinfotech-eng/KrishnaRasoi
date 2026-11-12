@@ -10,6 +10,17 @@ class GuestHouseController
 
         try {
             $this->addColumnIfMissing('guest_house_guests', 'payment_mode', "ALTER TABLE guest_house_guests ADD COLUMN payment_mode VARCHAR(20) NOT NULL DEFAULT 'cash' AFTER id_proof");
+            $this->addColumnIfMissing('guest_house_guests', 'per_day_rent', "ALTER TABLE guest_house_guests ADD COLUMN per_day_rent DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER payment_mode");
+            Database::run("CREATE TABLE IF NOT EXISTS guest_house_payments (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                guest_id INT NOT NULL,
+                amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+                payment_mode VARCHAR(20) NOT NULL DEFAULT 'cash',
+                created_by INT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_guest_house_payments_guest (guest_id),
+                INDEX idx_guest_house_payments_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
             $this->addColumnIfMissing('guest_house_guests', 'total_amount', "ALTER TABLE guest_house_guests ADD COLUMN total_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER payment_mode");
             $this->addColumnIfMissing('guest_house_guests', 'advance_amount', "ALTER TABLE guest_house_guests ADD COLUMN advance_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER total_amount");
             $this->addColumnIfMissing('guest_house_guests', 'paid_amount', "ALTER TABLE guest_house_guests ADD COLUMN paid_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER advance_amount");
@@ -448,7 +459,7 @@ class GuestHouseController
         $recentGuests = Database::all(
             "SELECT g.id, g.guest_name, g.phone, g.address, g.id_proof, g.room_id, r.category_id,
                     g.status, g.room_no, g.check_in_at, g.check_out_at, g.expected_checkout_at,
-                    g.total_amount, g.advance_amount, g.paid_amount, g.balance_amount, g.payment_mode,
+                    g.per_day_rent, g.total_amount, g.advance_amount, g.paid_amount, g.balance_amount, g.payment_mode,
                     g.booking_from, g.booking_to, g.adults_count, g.children_count, g.extra_bed_count, g.extra_bed_rate,
                     g.id_proof_photo, g.guest_photo,
                     g.companions, g.companions_id_details
@@ -625,12 +636,14 @@ class GuestHouseController
         if ($expectedTs < $fromTs) $expectedTs = $toTs;
         $expectedCheckoutSql = date('Y-m-d H:i:s', $expectedTs);
 
-        $totalAmount = max(0, $req->bodyFloat('total_amount', 0));
+        $perDayRent = max(0, $req->bodyFloat('per_day_rent', 0));
+        $stayDays = max(1, (int)ceil(($toTs - $fromTs) / 86400));
+        $totalAmount = $perDayRent > 0 ? round($perDayRent * $stayDays, 2) : max(0, $req->bodyFloat('total_amount', 0));
         $advanceAmount = max(0, $req->bodyFloat('advance_amount', 0));
         $paidAmount = max(0, $req->bodyFloat('paid_amount', $advanceAmount));
         if ($paidAmount < $advanceAmount) $paidAmount = $advanceAmount;
         if ($paidAmount > $totalAmount) $paidAmount = $totalAmount;
-        $balanceAmount = max(0, $totalAmount - $paidAmount);
+        $balanceAmount = max(0, $req->bodyFloat('balance_amount', $totalAmount - $paidAmount));
         $paymentMode = $this->paymentMode($req->bodyStr('payment_mode', 'cash'));
         $bookingId = $req->bodyInt('booking_id', 0);
         $adultsCount = max(1, $req->bodyInt('adults_count', 1));
@@ -690,7 +703,7 @@ class GuestHouseController
                          companions = ?, companions_id_details = ?,
                          room_id = ?, room_no = ?, address = ?, id_proof = ?,
                          id_proof_photo = COALESCE(?, id_proof_photo), guest_photo = COALESCE(?, guest_photo),
-                         payment_mode = ?, total_amount = ?, advance_amount = ?, paid_amount = ?, balance_amount = ?,
+                         payment_mode = ?, per_day_rent = ?, total_amount = ?, advance_amount = ?, paid_amount = ?, balance_amount = ?,
                          booking_from = ?, booking_to = ?, expected_checkout_at = ?, check_in_at = NOW(), check_out_at = NULL,
                          status = 'checked_in', updated_at = NOW()
                      WHERE id = ?",
@@ -710,6 +723,7 @@ class GuestHouseController
                         $idProofPhoto,
                         $guestPhoto,
                         $paymentMode,
+                        $perDayRent,
                         $totalAmount,
                         $advanceAmount,
                         $paidAmount,
@@ -724,8 +738,8 @@ class GuestHouseController
             } else {
                 Database::run(
                     "INSERT INTO guest_house_guests
-                     (guest_name, phone, adults_count, children_count, extra_bed_count, extra_bed_rate, companions, companions_id_details, room_id, room_no, address, id_proof, id_proof_photo, guest_photo, payment_mode, total_amount, advance_amount, paid_amount, balance_amount, booking_from, booking_to, expected_checkout_at, check_in_at, status, created_by)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), 'checked_in', ?)",
+                     (guest_name, phone, adults_count, children_count, extra_bed_count, extra_bed_rate, companions, companions_id_details, room_id, room_no, address, id_proof, id_proof_photo, guest_photo, payment_mode, per_day_rent, total_amount, advance_amount, paid_amount, balance_amount, booking_from, booking_to, expected_checkout_at, check_in_at, status, created_by)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), 'checked_in', ?)",
                     [
                         $req->bodyStr('guest_name'),
                         $req->bodyStr('phone'),
@@ -742,6 +756,7 @@ class GuestHouseController
                         $idProofPhoto,
                         $guestPhoto,
                         $paymentMode,
+                        $perDayRent,
                         $totalAmount,
                         $advanceAmount,
                         $paidAmount,
@@ -756,6 +771,12 @@ class GuestHouseController
             }
 
             Database::run("UPDATE guest_house_rooms SET status = 'booked' WHERE id = ?", [(int) $room['id']]);
+            if ($bookingId <= 0 && $advanceAmount > 0 && $this->tableExists('guest_house_payments')) {
+                Database::run(
+                    "INSERT INTO guest_house_payments (guest_id, amount, payment_mode, created_by, created_at) VALUES (?, ?, ?, ?, NOW())",
+                    [$guestId, $advanceAmount, $paymentMode, (int)$payload['admin_id']]
+                );
+            }
             Database::commit();
         } catch (Throwable $e) {
             Database::rollback();
@@ -813,7 +834,9 @@ class GuestHouseController
             Response::error($this->roomConflictMessage($bookingConflict), 409);
         }
 
-        $totalAmount = max(0, $req->bodyFloat('total_amount', 0));
+        $perDayRent = max(0, $req->bodyFloat('per_day_rent', 0));
+        $stayDays = max(1, (int)ceil((strtotime($toSql) - strtotime($fromSql)) / 86400));
+        $totalAmount = $perDayRent > 0 ? round($perDayRent * $stayDays, 2) : max(0, $req->bodyFloat('total_amount', 0));
         $advanceAmount = max(0, $req->bodyFloat('advance_amount', 0));
         if ($advanceAmount > $totalAmount) $advanceAmount = $totalAmount;
         $balanceAmount = max(0, $totalAmount - $advanceAmount);
@@ -825,8 +848,8 @@ class GuestHouseController
 
         Database::run(
             "INSERT INTO guest_house_guests
-             (guest_name, phone, adults_count, children_count, companions, companions_id_details, room_id, room_no, address, id_proof, payment_mode, total_amount, advance_amount, paid_amount, balance_amount, booking_from, booking_to, expected_checkout_at, status, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?)",
+             (guest_name, phone, adults_count, children_count, companions, companions_id_details, room_id, room_no, address, id_proof, payment_mode, per_day_rent, total_amount, advance_amount, paid_amount, balance_amount, booking_from, booking_to, expected_checkout_at, status, created_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?)",
             [
                 $req->bodyStr('guest_name'),
                 $req->bodyStr('phone'),
@@ -839,6 +862,7 @@ class GuestHouseController
                 $req->bodyStr('address'),
                 $req->bodyStr('id_proof') ?: '',
                 $paymentMode,
+                $perDayRent,
                 $totalAmount,
                 $advanceAmount,
                 $advanceAmount,
@@ -850,6 +874,12 @@ class GuestHouseController
             ]
         );
         $bookingId = Database::lastId();
+        if ($advanceAmount > 0 && $this->tableExists('guest_house_payments')) {
+            Database::run(
+                "INSERT INTO guest_house_payments (guest_id, amount, payment_mode, created_by, created_at) VALUES (?, ?, ?, ?, NOW())",
+                [$bookingId, $advanceAmount, $paymentMode, (int)$payload['admin_id']]
+            );
+        }
 
         CustomerService::upsertFromContact($req->bodyStr('guest_name'), $req->bodyStr('phone'), true, 'GUEST_HOUSE');
 
@@ -862,7 +892,7 @@ class GuestHouseController
         Auth::requireFrontDesk();
         $this->ensureAdvancedSchema();
         $rows = Database::all(
-            "SELECT g.id, g.room_no, g.guest_name, g.phone, g.booking_from, g.booking_to, g.total_amount, g.advance_amount, g.balance_amount, g.payment_mode, g.status,
+            "SELECT g.id, g.room_no, g.guest_name, g.phone, g.booking_from, g.booking_to, g.per_day_rent, g.total_amount, g.advance_amount, g.balance_amount, g.payment_mode, g.status,
                     g.adults_count, g.children_count, g.companions, g.companions_id_details, g.room_id, r.category_id, g.expected_checkout_at
              FROM guest_house_guests g
              LEFT JOIN guest_house_rooms r ON r.id = g.room_id
@@ -929,13 +959,14 @@ class GuestHouseController
             $idProofPhoto = $this->photoData($req->bodyStr('id_proof_photo'), 'id_proof_photo');
             $guestPhoto = $this->photoData($req->bodyStr('guest_photo'), 'guest_photo');
 
+            $perDayRent = max(0, $req->bodyFloat('per_day_rent', (float)($guest['per_day_rent'] ?? 0)));
             $totalAmount = max(0, $req->bodyFloat('total_amount', (float)$guest['total_amount']));
             $advanceAmount = max(0, $req->bodyFloat('advance_amount', (float)$guest['advance_amount']));
             $paidAmount = max(0, $req->bodyFloat('paid_amount', (float)$guest['paid_amount']));
             if ($advanceAmount > $totalAmount) $advanceAmount = $totalAmount;
             if ($paidAmount < $advanceAmount) $paidAmount = $advanceAmount;
             if ($paidAmount > $totalAmount) $paidAmount = $totalAmount;
-            $balanceAmount = max(0, $totalAmount - $paidAmount);
+            $balanceAmount = max(0, $req->bodyFloat('balance_amount', $totalAmount - $paidAmount));
 
             $checkInAtExpr = $newStatus === 'checked_in' ? "COALESCE(check_in_at, NOW())" : "check_in_at";
             $checkOutAtExpr = $newStatus === 'checked_out' ? "COALESCE(check_out_at, NOW())" : "check_out_at";
@@ -945,7 +976,7 @@ class GuestHouseController
                  SET guest_name = ?, phone = ?, adults_count = ?, children_count = ?, extra_bed_count = ?, extra_bed_rate = ?,
                      companions = ?, companions_id_details = ?,
                      room_id = ?, room_no = ?, address = ?, id_proof = ?,
-                     id_proof_photo = COALESCE(?, id_proof_photo), guest_photo = COALESCE(?, guest_photo), payment_mode = ?,
+                     id_proof_photo = COALESCE(?, id_proof_photo), guest_photo = COALESCE(?, guest_photo), payment_mode = ?, per_day_rent = ?,
                      total_amount = ?, advance_amount = ?, paid_amount = ?, balance_amount = ?,
                      booking_from = ?, booking_to = ?, expected_checkout_at = ?,
                      status = ?, check_in_at = {$checkInAtExpr}, check_out_at = {$checkOutAtExpr}, updated_at = NOW()
@@ -966,6 +997,7 @@ class GuestHouseController
                     $idProofPhoto,
                     $guestPhoto,
                     $this->paymentMode($req->bodyStr('payment_mode', $guest['payment_mode'] ?? 'cash')),
+                    $perDayRent,
                     $totalAmount,
                     $advanceAmount,
                     $paidAmount,
@@ -1029,15 +1061,16 @@ class GuestHouseController
             }
 
             $newPaid = (float)$guest['paid_amount'] + $amount;
-            $total = (float)$guest['total_amount'];
-            if ($newPaid > $total) $newPaid = $total;
-            $newBalance = max(0, $total - $newPaid);
+            // Balance is the authoritative outstanding amount (room tariff + extra charges
+            // and any manual balance adjustment), so payments reduce that exact due.
+            $newBalance = max(0, (float)$guest['balance_amount'] - $amount);
 
             Database::run(
                 "UPDATE guest_house_guests
                  SET paid_amount = ?, balance_amount = ?, payment_mode = ?, updated_at = NOW()
                  WHERE id = ?",
-                [$newPaid, $newBalance, $paymentMode, $guestId]
+                [$newPaid, $newBalance, $paymentMode,
+                    $perDayRent, $guestId]
             );
             if ($this->tableExists('guest_house_payments')) {
                 Database::run(
@@ -1246,6 +1279,9 @@ class GuestHouseController
               )
             : [];
 
+        $payments = $this->tableExists('guest_house_payments')
+            ? Database::all("SELECT amount, payment_mode, created_at FROM guest_house_payments WHERE guest_id = ? ORDER BY created_at ASC, id ASC", [$guestId])
+            : [];
         $food = 0.0; $laundry = 0.0; $other = 0.0;
         foreach ($charges as $c) {
             $amt = (float)$c['amount'];
@@ -1266,20 +1302,21 @@ class GuestHouseController
         $extraBed = (float)$guest['extra_bed_count'] * (float)$guest['extra_bed_rate'];
         $subTotal = $roomRent + $extraBed + $food + $laundry + $other;
         $paid = (float)$guest['paid_amount'];
-        $balance = max(0, $subTotal - $paid);
+        $balance = max(0, (float)($guest['balance_amount'] ?? ($subTotal - $paid)));
 
         Helper::log(0, 'final_bill_view', 'guest_house', $guestId, 'Final bill viewed');
         Response::success([
             'guest' => $guest,
             'nights' => $nights,
             'lines' => [
-                ['label' => 'Room Rent', 'amount' => $roomRent],
+                ['label' => 'Room Rent (' . number_format((float)($guest['per_day_rent'] ?? 0), 2) . ' × ' . $nights . ' days)', 'amount' => $roomRent],
                 ['label' => "Extra Bed ({$guest['extra_bed_count']} x " . number_format((float)$guest['extra_bed_rate'], 2) . ')', 'amount' => $extraBed],
                 ['label' => 'Food', 'amount' => $food],
                 ['label' => 'Laundry', 'amount' => $laundry],
                 ['label' => 'Other Charges', 'amount' => $other],
             ],
             'charges' => $charges,
+            'payments' => $payments,
             'sub_total' => $subTotal,
             'paid_amount' => $paid,
             'balance_amount' => $balance,

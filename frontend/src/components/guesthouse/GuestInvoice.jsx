@@ -20,7 +20,7 @@ export function buildInvoice(billData, settings) {
     gstAmount,
     grandTotal,
     paid,
-    balance: +(grandTotal - paid).toFixed(2),
+    balance: Number.isFinite(Number(billData?.balance_amount)) ? Number(billData.balance_amount) : +(grandTotal - paid).toFixed(2),
     nights: billData?.nights || 1,
     invoiceNo: `${settings?.invoice_prefix || 'KS'}-${String(g.id || 0).padStart(5, '0')}`,
     issuedOn: new Date().toLocaleString('en-IN'),
@@ -112,6 +112,24 @@ export default function GuestInvoice({ billData, settings, id = 'gh-invoice' }) 
           </tr>
         </tfoot>
       </table>
+
+      {(billData?.payments || []).length > 0 && (
+        <div className="mt-5">
+          <p className="font-semibold text-sm mb-2">Payment History</p>
+          <table className="w-full text-xs">
+            <thead><tr className="border-b border-surface-200 text-left"><th className="py-1">Date &amp; Time</th><th className="py-1">Mode</th><th className="py-1 text-right">Amount</th></tr></thead>
+            <tbody>
+              {billData.payments.map((payment, index) => (
+                <tr key={index} className="border-b border-surface-100">
+                  <td className="py-1">{payment.created_at}</td>
+                  <td className="py-1">{String(payment.payment_mode || '').toUpperCase()}</td>
+                  <td className="py-1 text-right">{money(payment.amount)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <p className="text-[11px] text-surface-400 mt-6 border-t border-surface-200 pt-3">
         Thank you for staying with us.
@@ -206,6 +224,18 @@ export function downloadGuestInvoicePdf(billData, settings) {
     styles: { fontSize: 9.5, cellPadding: 4 },
     columnStyles: { 1: { halign: 'right', fontStyle: 'bold' } },
   })
+
+  if ((billData?.payments || []).length) {
+    const paymentY = doc.lastAutoTable?.finalY ? doc.lastAutoTable.finalY + 12 : afterTable + 100
+    autoTable(doc, {
+      startY: paymentY,
+      head: [['Payment History', 'Mode', 'Date & Time', 'Amount']],
+      body: billData.payments.map(p => [ '', String(p.payment_mode || '').toUpperCase(), String(p.created_at || ''), Number(p.amount || 0).toFixed(2)]),
+      theme: 'grid',
+      styles: { fontSize: 8, cellPadding: 4 },
+      columnStyles: { 3: { halign: 'right' } },
+    })
+  }
 
   doc.setFontSize(8); doc.setTextColor(130)
   doc.text('Thank you for staying with us. Computer generated invoice.', 40, 800)

@@ -31,6 +31,12 @@ function checkoutFor(fromVal) {
   const fromDate = dateOnly(fromVal) || toLocalInputValue(new Date()).slice(0, 10)
   return combineDateTime(addDaysTo(fromDate, 1), CHECK_OUT_HOUR)
 }
+function stayDays(from, to) {
+  const a = new Date(from || '')
+  const b = new Date(to || '')
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime()) || b <= a) return 1
+  return Math.max(1, Math.ceil((b.getTime() - a.getTime()) / 86400000))
+}
 function defaultDateRange() {
   const from = combineDateTime(toLocalInputValue(new Date()).slice(0, 10), CHECK_IN_HOUR)
   return { from, to: checkoutFor(from) }
@@ -58,7 +64,7 @@ function Stat({ label, value, color }) {
 
 const BLANK_GUEST = {
   guest_name: '', phone: '', category_id: '', room_no: '', address: '', id_proof: '',
-  from_date: '', to_date: '', expected_checkout_at: '', total_amount: '', advance_amount: '',
+  from_date: '', to_date: '', expected_checkout_at: '', per_day_rent: '', total_amount: '', advance_amount: '',
   paid_amount: '', payment_mode: 'cash', booking_id: '', adults_count: 1, children_count: 0,
   extra_bed_count: 0, extra_bed_rate: '', id_proof_photo: '', guest_photo: '',
   companions: '', companions_id_details: '',
@@ -185,8 +191,8 @@ export default function GuestHouse() {
       ...BLANK_GUEST,
       guest_name: b.guest_name || '', phone: b.phone || '', address: b.address || '',
       id_proof: b.id_proof || '', category_id: String(b.category_id || ''), room_no: b.room_no || '',
-      from_date: r.from, to_date: r.to, expected_checkout_at: r.to,
-      total_amount: b.total_amount ?? '', advance_amount: b.advance_amount ?? '',
+      from_date: (b.booking_from || r.from).slice(0, 16), to_date: (b.booking_to || r.to).slice(0, 16), expected_checkout_at: (b.booking_to || r.to).slice(0, 16),
+      per_day_rent: b.per_day_rent ?? '', total_amount: b.total_amount ?? '', advance_amount: b.advance_amount ?? '',
       paid_amount: b.advance_amount ?? '', payment_mode: b.payment_mode || 'cash',
       booking_id: b.id,
     })
@@ -201,7 +207,8 @@ export default function GuestHouse() {
     }
     setSubmitting(true)
     try {
-      await guestHouseAPI.createGuest({ ...form, paid_amount: form.paid_amount || form.advance_amount })
+      const tariff = Number(form.per_day_rent || 0) * stayDays(form.from_date, form.to_date)
+      await guestHouseAPI.createGuest({ ...form, total_amount: tariff || Number(form.total_amount || 0), paid_amount: form.paid_amount || form.advance_amount })
       toast.success('Guest check-in ho gaya.')
       setForm(BLANK_GUEST)
       setShowGuestModal(false)
@@ -219,7 +226,8 @@ export default function GuestHouse() {
     }
     setSubmitting(true)
     try {
-      await guestHouseAPI.createBooking(bookingForm)
+      const tariff = Number(bookingForm.per_day_rent || 0) * stayDays(bookingForm.from_date, bookingForm.to_date)
+      await guestHouseAPI.createBooking({ ...bookingForm, total_amount: tariff || Number(bookingForm.total_amount || 0) })
       toast.success('Advance booking create ho gayi.')
       const r = defaultDateRange()
       setBookingForm({ ...BLANK_GUEST, from_date: r.from, to_date: r.to })
@@ -239,8 +247,8 @@ export default function GuestHouse() {
       address: row.address || '', id_proof: row.id_proof || '',
       from_date: from, to_date: to,
       expected_checkout_at: (row.expected_checkout_at || row.booking_to || '').slice(0, 16),
-      total_amount: row.total_amount ?? '', advance_amount: row.advance_amount ?? '',
-      paid_amount: row.paid_amount ?? '', payment_mode: row.payment_mode || 'cash',
+      per_day_rent: row.per_day_rent ?? '', total_amount: row.total_amount ?? '', advance_amount: row.advance_amount ?? '',
+      paid_amount: row.paid_amount ?? '', balance_amount: row.balance_amount ?? '', payment_mode: row.payment_mode || 'cash',
       adults_count: row.adults_count ?? 1, children_count: row.children_count ?? 0,
       extra_bed_count: row.extra_bed_count ?? 0, extra_bed_rate: row.extra_bed_rate ?? '',
       companions: row.companions || '', companions_id_details: row.companions_id_details || '',
@@ -255,7 +263,8 @@ export default function GuestHouse() {
     if (!editForm?.id) return
     setSubmitting(true)
     try {
-      await guestHouseAPI.updateGuest(editForm.id, editForm)
+      const editTariff = Number(editForm.per_day_rent || 0) > 0 ? Number(editForm.per_day_rent) * stayDays(editForm.from_date, editForm.to_date) : Number(editForm.total_amount || 0)
+      await guestHouseAPI.updateGuest(editForm.id, { ...editForm, total_amount: editTariff })
       toast.success('Record update ho gaya.')
       setShowEditModal(false); setEditForm(null); load()
     } catch (err) {
@@ -290,8 +299,10 @@ export default function GuestHouse() {
     } finally { setSubmitting(false) }
   }
 
-  const onCheckout = async guestId => {
-    if (!window.confirm('Checkout karein aur room free karein?')) return
+  const onCheckout = async (guestId, pendingBalance = 0) => {
+    const dueText = Number(pendingBalance) > 0 ? `
+Pending balance: ₹${Number(pendingBalance).toFixed(2)} (final bill me due rahega).` : ''
+    if (!window.confirm(`Checkout karein aur room free karein?${dueText}`)) return
     try {
       await guestHouseAPI.checkout(guestId)
       toast.success('Guest checkout ho gaya.')
@@ -556,7 +567,7 @@ export default function GuestHouse() {
                         Add Payment
                       </button>
                     )}
-                    <button className="btn-secondary btn btn-sm" onClick={() => onCheckout(room.guest_id)}>Checkout</button>
+                    <button className="btn-secondary btn btn-sm" onClick={() => onCheckout(room.guest_id, room.balance_amount)}>Checkout</button>
                     <button className="btn-ghost btn btn-sm" onClick={() => openFinalBill({ id: room.guest_id, guest_name: room.guest_name, room_no: room.room_no })}>Bill</button>
                   </div>
                 </div>
@@ -735,10 +746,14 @@ export default function GuestHouse() {
               <input type="number" min="0" className="input" value={form.extra_bed_count} onChange={e => setForm(p => ({ ...p, extra_bed_count: e.target.value }))} /></div>
             <div className="form-group"><label className="label">Extra Bed Rate (₹/night)</label>
               <input type="number" step="0.01" className="input" value={form.extra_bed_rate} onChange={e => setForm(p => ({ ...p, extra_bed_rate: e.target.value }))} /></div>
-            <div className="form-group"><label className="label">Total Amount (Room Rent)</label>
-              <input type="number" step="0.01" className="input" value={form.total_amount} onChange={e => setForm(p => ({ ...p, total_amount: e.target.value }))} /></div>
-            <div className="form-group"><label className="label">Advance / Paid</label>
-              <input type="number" step="0.01" className="input" value={form.advance_amount} onChange={e => setForm(p => ({ ...p, advance_amount: e.target.value, paid_amount: e.target.value }))} /></div>
+            <div className="form-group"><label className="label">Per Day Rent (₹)</label>
+              <input type="number" min="0" step="0.01" className="input" value={form.per_day_rent} onChange={e => setForm(p => ({ ...p, per_day_rent: e.target.value }))} /></div>
+            <div className="form-group"><label className="label">Tariff Amount (₹)</label>
+              <input type="number" step="0.01" className="input bg-surface-50" readOnly value={(Number(form.per_day_rent || 0) * stayDays(form.from_date, form.to_date)).toFixed(2)} /></div>
+            <div className="form-group"><label className="label">Advance Paid (₹)</label>
+              <input type="number" min="0" step="0.01" className="input" value={form.advance_amount} onChange={e => setForm(p => ({ ...p, advance_amount: e.target.value, paid_amount: e.target.value }))} /></div>
+            <div className="form-group"><label className="label">Remaining Balance (₹)</label>
+              <input type="number" className="input bg-surface-50" readOnly value={Math.max(0, Number(form.per_day_rent || 0) * stayDays(form.from_date, form.to_date) - Number(form.advance_amount || 0)).toFixed(2)} /></div>
             <div className="form-group"><label className="label">Payment Mode</label>
               <select className="select" value={form.payment_mode} onChange={e => setForm(p => ({ ...p, payment_mode: e.target.value }))}>
                 <option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option>
@@ -792,10 +807,14 @@ export default function GuestHouse() {
               <input type="number" min="1" className="input" value={bookingForm.adults_count} onChange={e => setBookingForm(p => ({ ...p, adults_count: e.target.value }))} /></div>
             <div className="form-group"><label className="label">Children</label>
               <input type="number" min="0" className="input" value={bookingForm.children_count} onChange={e => setBookingForm(p => ({ ...p, children_count: e.target.value }))} /></div>
-            <div className="form-group"><label className="label">Total Amount</label>
-              <input type="number" step="0.01" className="input" value={bookingForm.total_amount} onChange={e => setBookingForm(p => ({ ...p, total_amount: e.target.value }))} /></div>
-            <div className="form-group"><label className="label">Advance Amount</label>
-              <input type="number" step="0.01" className="input" value={bookingForm.advance_amount} onChange={e => setBookingForm(p => ({ ...p, advance_amount: e.target.value }))} /></div>
+            <div className="form-group"><label className="label">Per Day Rent (₹)</label>
+              <input type="number" min="0" step="0.01" className="input" value={bookingForm.per_day_rent} onChange={e => setBookingForm(p => ({ ...p, per_day_rent: e.target.value }))} /></div>
+            <div className="form-group"><label className="label">Tariff Amount (₹)</label>
+              <input type="number" className="input bg-surface-50" readOnly value={(Number(bookingForm.per_day_rent || 0) * stayDays(bookingForm.from_date, bookingForm.to_date)).toFixed(2)} /></div>
+            <div className="form-group"><label className="label">Advance Paid (₹)</label>
+              <input type="number" min="0" step="0.01" className="input" value={bookingForm.advance_amount} onChange={e => setBookingForm(p => ({ ...p, advance_amount: e.target.value }))} /></div>
+            <div className="form-group"><label className="label">Remaining Balance (₹)</label>
+              <input type="number" className="input bg-surface-50" readOnly value={Math.max(0, Number(bookingForm.per_day_rent || 0) * stayDays(bookingForm.from_date, bookingForm.to_date) - Number(bookingForm.advance_amount || 0)).toFixed(2)} /></div>
             <div className="form-group"><label className="label">Payment Mode</label>
               <select className="select" value={bookingForm.payment_mode} onChange={e => setBookingForm(p => ({ ...p, payment_mode: e.target.value }))}>
                 <option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option>
@@ -861,9 +880,10 @@ export default function GuestHouse() {
                   <option value="reserved">Reserved</option><option value="checked_in">Checked In</option>
                   <option value="checked_out">Checked Out</option><option value="cancelled">Cancelled</option>
                 </select></div>
-              <div className="form-group"><label className="label">Total</label><input type="number" step="0.01" className="input" value={editForm.total_amount} onChange={e => setEditForm(p => ({ ...p, total_amount: e.target.value }))} /></div>
-              <div className="form-group"><label className="label">Advance</label><input type="number" step="0.01" className="input" value={editForm.advance_amount} onChange={e => setEditForm(p => ({ ...p, advance_amount: e.target.value }))} /></div>
-              <div className="form-group"><label className="label">Paid</label><input type="number" step="0.01" className="input" value={editForm.paid_amount} onChange={e => setEditForm(p => ({ ...p, paid_amount: e.target.value }))} /></div>
+              <div className="form-group"><label className="label">Per Day Rent (₹)</label><input type="number" min="0" step="0.01" className="input" value={editForm.per_day_rent ?? ''} onChange={e => setEditForm(p => ({ ...p, per_day_rent: e.target.value }))} /></div>
+              <div className="form-group"><label className="label">Total Tariff (₹)</label><input type="number" step="0.01" className="input bg-surface-50" readOnly value={(Number(editForm.per_day_rent || 0) > 0 ? Number(editForm.per_day_rent || 0) * stayDays(editForm.from_date, editForm.to_date) : Number(editForm.total_amount || 0)).toFixed(2)} /></div>
+              <div className="form-group"><label className="label">Advance Paid (₹)</label><input type="number" step="0.01" className="input bg-surface-50" value={editForm.advance_amount} readOnly /></div>
+              <div className="form-group"><label className="label">Remaining Balance (₹) — Editable</label><input type="number" min="0" step="0.01" className="input" value={editForm.balance_amount ?? ''} onChange={e => setEditForm(p => ({ ...p, balance_amount: e.target.value }))} /></div>
               <div className="form-group"><label className="label">Payment Mode</label>
                 <select className="select" value={editForm.payment_mode} onChange={e => setEditForm(p => ({ ...p, payment_mode: e.target.value }))}>
                   <option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option>
