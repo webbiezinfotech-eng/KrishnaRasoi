@@ -65,7 +65,7 @@ function Stat({ label, value, color }) {
 const BLANK_GUEST = {
   guest_name: '', phone: '', category_id: '', room_no: '', address: '', id_proof: '',
   from_date: '', to_date: '', expected_checkout_at: '', per_day_rent: '', total_amount: '', advance_amount: '',
-  paid_amount: '', payment_mode: 'cash', booking_id: '', adults_count: 1, children_count: 0,
+  paid_amount: '', balance_amount: '', payment_mode: 'cash', booking_id: '', adults_count: 1, children_count: 0,
   extra_bed_count: 0, extra_bed_rate: '', id_proof_photo: '', guest_photo: '',
   companions: '', companions_id_details: '',
 }
@@ -197,6 +197,18 @@ export default function GuestHouse() {
       booking_id: b.id,
     })
     setShowGuestModal(true)
+  }
+
+  // Walk-in check-in: tariff is the per-day rate; balance is recalculated
+  // whenever dates, tariff or advance payment change, while remaining editable.
+  const updateWalkInForm = patch => {
+    setForm(previous => {
+      const next = { ...previous, ...patch }
+      const total = Number(next.per_day_rent || 0) * stayDays(next.from_date, next.to_date)
+      next.total_amount = total.toFixed(2)
+      next.balance_amount = Math.max(0, total - Number(next.advance_amount || 0)).toFixed(2)
+      return next
+    })
   }
 
   const onCheckIn = async e => {
@@ -727,15 +739,15 @@ Pending balance: ₹${Number(pendingBalance).toFixed(2)} (final bill me due rahe
             </div>
             <div className="form-group"><label className="label">From Date &amp; Time</label>
               <input type="datetime-local" className="input" value={form.from_date}
-                onChange={e => setForm(p => {
+                onChange={e => {
                   const from = e.target.value
                   const checkOut = checkoutFor(from)
-                  return { ...p, from_date: from, to_date: checkOut, expected_checkout_at: checkOut }
-                })} />
+                  updateWalkInForm({ from_date: from, to_date: checkOut, expected_checkout_at: checkOut })
+                }} />
               <p className="text-xs text-surface-400 mt-1"></p></div>
             <div className="form-group"><label className="label">To Date &amp; Time</label>
               <input type="datetime-local" className="input" value={form.to_date}
-                onChange={e => setForm(p => ({ ...p, to_date: e.target.value, expected_checkout_at: e.target.value }))} /></div>
+                onChange={e => updateWalkInForm({ to_date: e.target.value, expected_checkout_at: e.target.value })} /></div>
             <div className="form-group"><label className="label">Expected Checkout</label>
               <input type="datetime-local" className="input" value={form.expected_checkout_at} onChange={e => setForm(p => ({ ...p, expected_checkout_at: e.target.value }))} /></div>
             <div className="form-group"><label className="label">Adults</label>
@@ -746,14 +758,12 @@ Pending balance: ₹${Number(pendingBalance).toFixed(2)} (final bill me due rahe
               <input type="number" min="0" className="input" value={form.extra_bed_count} onChange={e => setForm(p => ({ ...p, extra_bed_count: e.target.value }))} /></div>
             <div className="form-group"><label className="label">Extra Bed Rate (₹/night)</label>
               <input type="number" step="0.01" className="input" value={form.extra_bed_rate} onChange={e => setForm(p => ({ ...p, extra_bed_rate: e.target.value }))} /></div>
-            <div className="form-group"><label className="label">Per Day Rent (₹)</label>
-              <input type="number" min="0" step="0.01" className="input" value={form.per_day_rent} onChange={e => setForm(p => ({ ...p, per_day_rent: e.target.value }))} /></div>
-            <div className="form-group"><label className="label">Tariff Amount (₹)</label>
-              <input type="number" step="0.01" className="input bg-surface-50" readOnly value={(Number(form.per_day_rent || 0) * stayDays(form.from_date, form.to_date)).toFixed(2)} /></div>
+            <div className="form-group"><label className="label">Tariff Amount (₹/Day)</label>
+              <input type="number" min="0" step="0.01" className="input" value={form.per_day_rent} onChange={e => updateWalkInForm({ per_day_rent: e.target.value })} /></div>
             <div className="form-group"><label className="label">Advance Paid (₹)</label>
-              <input type="number" min="0" step="0.01" className="input" value={form.advance_amount} onChange={e => setForm(p => ({ ...p, advance_amount: e.target.value, paid_amount: e.target.value }))} /></div>
+              <input type="number" min="0" step="0.01" className="input" value={form.advance_amount} onChange={e => updateWalkInForm({ advance_amount: e.target.value, paid_amount: e.target.value })} /></div>
             <div className="form-group"><label className="label">Remaining Balance (₹)</label>
-              <input type="number" className="input bg-surface-50" readOnly value={Math.max(0, Number(form.per_day_rent || 0) * stayDays(form.from_date, form.to_date) - Number(form.advance_amount || 0)).toFixed(2)} /></div>
+              <input type="number" min="0" step="0.01" className="input" value={form.balance_amount} onChange={e => setForm(p => ({ ...p, balance_amount: e.target.value }))} /></div>
             <div className="form-group"><label className="label">Payment Mode</label>
               <select className="select" value={form.payment_mode} onChange={e => setForm(p => ({ ...p, payment_mode: e.target.value }))}>
                 <option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option>
